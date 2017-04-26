@@ -21,7 +21,12 @@ import java.net.Socket;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SNIServerName;
+import javax.net.ssl.SNIHostName;
+import java.util.List;
+import java.util.ArrayList;
+import javax.net.ssl.SSLException;
 
 /**
  * A class to connect to the server.
@@ -107,6 +112,11 @@ class SocketConnector
 
         try
         {
+            if (mSocket instanceof SSLSocket) {
+                // Set SNI extension header; the createSocket() function we use doesn't do it
+                setSNIServerName((SSLSocket)mSocket, mAddress.getHostname());
+            }
+
             // Connect to the server (either a proxy or a WebSocket endpoint).
             mSocket.connect(mAddress.toInetSocketAddress(), mConnectionTimeout);
 
@@ -137,7 +147,7 @@ class SocketConnector
     }
 
 
-    private void verifyHostname(SSLSocket socket, String hostname) throws HostnameUnverifiedException
+    private void verifyHostname(SSLSocket socket, String hostname) throws HostnameUnverifiedException, WebSocketException
     {
         // Hostname verifier.
         OkHostnameVerifier verifier = OkHostnameVerifier.INSTANCE;
@@ -145,17 +155,34 @@ class SocketConnector
         // The SSL session.
         SSLSession session = socket.getSession();
 
-        // Verify the hostname.
-        if (verifier.verify(hostname, session))
-        {
-            // Verified. No problem.
-            return;
+        try {
+            // Verify the hostname.
+            if (verifier.verifyWithExc(hostname, session))
+            {
+                // Verified. No problem.
+                return;
+            }
+        } catch (SSLException e) {
+            String message = String.format(
+                  "Handshake with the server (%s) failed: %s", hostname, e.getMessage());
+            throw new WebSocketException(WebSocketError.SSL_HANDSHAKE_ERROR, message, e);
         }
 
         // The certificate of the peer does not match the expected hostname.
         throw new HostnameUnverifiedException(socket, hostname);
     }
 
+    /**
+     * Set ServerName extension to target server name
+     */
+    private void setSNIServerName(SSLSocket socket, String hostname)
+    {
+        SSLParameters params = ((SSLSocket)mSocket).getSSLParameters();
+        List<SNIServerName> serverNames = new ArrayList<SNIServerName>(1);
+        serverNames.add(new SNIHostName(hostname));
+        params.setServerNames(serverNames);
+        ((SSLSocket)mSocket).setSSLParameters(params);
+    }
 
     /**
      * Perform proxy handshake and optionally SSL handshake.
@@ -199,6 +226,11 @@ class SocketConnector
 
         try
         {
+            if (mSocket instanceof SSLSocket) {
+                // Set SNI extension header; the createSocket() function we use doesn't do it
+                setSNIServerName((SSLSocket)mSocket, mProxyHandshaker.getProxiedHostname());
+            }
+
             // Start the SSL handshake manually. As for the reason, see
             // http://docs.oracle.com/javase/7/docs/technotes/guides/security/jsse/samples/sockets/client/SSLSocketClient.java
             ((SSLSocket)mSocket).startHandshake();
